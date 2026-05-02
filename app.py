@@ -36,11 +36,15 @@ st.markdown("""
     .stTextArea textarea::placeholder { color: #94a3b8 !important; }
 
     .stDateInput input,
-    .stDateInput [data-baseweb="input"] input {
+    .stDateInput [data-baseweb="input"] input,
+    .stDateInput [data-baseweb="input"],
+    .stDateInput [data-baseweb="base-input"] {
         background-color: #ffffff !important;
         color: #1e293b !important;
         border: 1.5px solid #cbd5e1 !important;
         border-radius: 8px !important;
+        box-shadow: none !important;
+        outline: none !important;
     }
     
     /* Ícono del calendario — oculto */
