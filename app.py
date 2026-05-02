@@ -86,8 +86,10 @@ st.markdown("""
     .stDateInput input:disabled,
     .stSelectbox [data-baseweb="select"][aria-disabled="true"] > div {
         background-color: #f8fafc !important;
-        color: #1e293b !important;        /* ← esto estaba como #94a3b8, cámbialo a #1e293b */
+        color: #1e293b !important;
         border-color: #e2e8f0 !important;
+        -webkit-text-fill-color: #1e293b !important;
+        opacity: 1 !important;
     }
 
     .stApp { background-color: #f1f5f9 !important; }
