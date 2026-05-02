@@ -853,8 +853,13 @@ with tab2:
                         total_det += sub
 
                     st.markdown("<hr>", unsafe_allow_html=True)
+                    igv_det      = total_det * 0.18
+                    total_c_igv  = total_det + igv_det
+                    t1, t2 = st.columns(2)
+                    t1.metric("Subtotal (sin IGV)", f"S/ {total_det:,.2f}")
+                    t2.metric("IGV (18%)",          f"S/ {igv_det:,.2f}")
                     st.markdown(
-                        f'<div class="total-box"><div class="lbl">TOTAL ORDEN</div><div class="val">S/ {total_det:,.2f}</div></div>',
+                        f'<div class="total-box"><div class="lbl">TOTAL CON IGV</div><div class="val">S/ {total_c_igv:,.2f}</div></div>',
                         unsafe_allow_html=True
                     )
 
