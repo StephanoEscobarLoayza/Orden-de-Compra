@@ -81,11 +81,12 @@ st.markdown("""
     [data-testid="metric-container"] label { color: #64748b !important; font-size: 12px !important; }
     [data-testid="metric-container"] [data-testid="metric-value"] { color: #1e293b !important; font-weight: 800 !important; }
 
+    /* Disabled inputs */
     .stTextInput input:disabled,
     .stDateInput input:disabled,
     .stSelectbox [data-baseweb="select"][aria-disabled="true"] > div {
         background-color: #f8fafc !important;
-        color: #94a3b8 !important;
+        color: #1e293b !important;        /* ← esto estaba como #94a3b8, cámbialo a #1e293b */
         border-color: #e2e8f0 !important;
     }
 
