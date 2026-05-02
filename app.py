@@ -105,7 +105,7 @@ st.markdown("""
         gap: 14px;
         box-shadow: 0 4px 12px rgba(30,58,95,0.25);
     }
-    .oc-header h2 { margin: 0; font-size: 20px; font-weight: 800; color: white !important; }
+    .oc-header h2, .oc-header h2 * { margin: 0; font-size: 20px; font-weight: 800; color: white !important; -webkit-text-fill-color: white !important; }
     .oc-header span.sub { font-size: 12px; opacity: 0.8; color: white !important; }
 
     .card {
