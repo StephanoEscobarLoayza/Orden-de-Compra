@@ -193,6 +193,18 @@ st.markdown("""
     #MainMenu, footer, header { visibility: hidden; }
     .block-container { padding-top: 1.2rem !important; }
 
+    /* Botones secundarios — fondo azul en vez de negro */
+    .stButton button {
+        background-color: #2d5a8e !important;
+        color: white !important;
+        -webkit-text-fill-color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+    }
+    .stButton button:hover {
+        background-color: #1e3a5f !important;
+    }
+
     .stTextInput label, .stSelectbox label, .stTextArea label,
     .stDateInput label, .stNumberInput label {
         font-size: 12px !important; font-weight: 700 !important;
