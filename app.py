@@ -42,7 +42,9 @@ st.markdown("""
         border: 1.5px solid #cbd5e1 !important;
         border-radius: 8px !important;
     }
-    .stDateInput [data-baseweb="input"] div[role="button"] svg { fill: #64748b !important; }
+    
+    /* Ícono del calendario — oculto */
+    .stDateInput [data-baseweb="input"] div[role="button"] { display: none !important; }
 
     .stSelectbox [data-baseweb="select"] > div,
     .stSelectbox [data-baseweb="select"] div[class*="ValueContainer"],
