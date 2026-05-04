@@ -4,6 +4,7 @@ from datetime import date, datetime
 import plotly.graph_objects as go
 import plotly.express as px
 from collections import defaultdict
+from reporte2 import generar_reporte_pdf
 
 # ── Config ───────────────────────────────────────────────────
 # Las claves se leen desde los "secrets" (archivo secreto local o configuración en Streamlit Cloud)
@@ -1354,6 +1355,35 @@ with tab5:
             1 for s in stock_data_dash
             if 0 < int(s["stock_actual"]) <= int(s.get("stock_minimo") or 0)
         )
+
+        # ── Botón exportar PDF ────────────────────────────────
+        st.markdown('<div class="card"><div class="card-title green">📄 Exportar Reporte</div>', unsafe_allow_html=True)
+        col_exp, col_info, _ = st.columns([1.5, 3, 3])
+        with col_exp:
+            try:
+                fecha_arch = datetime.now().strftime("%Y%m%d_%H%M")
+                pdf_bytes  = generar_reporte_pdf(
+                    ordenes_dash, detalles_dash, movs_dash, stock_data_dash
+                )
+                st.download_button(
+                    label="⬇️ Descargar Reporte PDF",
+                    data=pdf_bytes,
+                    file_name=f"reporte_oc_{fecha_arch}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="btn_download_pdf",
+                )
+            except Exception as e_pdf:
+                st.error(f"❌ Error al generar el PDF: {e_pdf}")
+        with col_info:
+            st.markdown(
+                "<p style='font-size:12px;color:#64748b;margin-top:6px;'>"
+                "El reporte incluye: KPIs, órdenes por mes, análisis ABC, "
+                "top proveedores, movimientos, alertas de stock y más.</p>",
+                unsafe_allow_html=True
+            )
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
 
         # ── Fila de KPIs ─────────────────────────────────────
         st.markdown('<div class="card"><div class="card-title blue">📊 Indicadores Generales</div>', unsafe_allow_html=True)
