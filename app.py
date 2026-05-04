@@ -1,6 +1,9 @@
 import streamlit as st
 from supabase import create_client
 from datetime import date, datetime
+import plotly.graph_objects as go
+import plotly.express as px
+from collections import defaultdict
 
 # ── Config ───────────────────────────────────────────────────
 # Las claves se leen desde los "secrets" (archivo secreto local o configuración en Streamlit Cloud)
@@ -97,7 +100,7 @@ st.markdown("""
         -webkit-text-fill-color: #1e293b !important;
         opacity: 1 !important;
     }
-
+    
     .stApp { background-color: #f1f5f9 !important; }
 
     .oc-header {
@@ -379,11 +382,12 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ── Pestañas de la app ────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📝  Nueva / Editar Orden",
     "🔍  Consultar Órdenes",
     "🔄  Movimientos",
     "📊  Kardex & Stock",
+    "📈  Dashboard",
 ])
 
 # ═══════════════════════════════════════════════════════════════
@@ -1280,3 +1284,515 @@ with tab4:
                     unsafe_allow_html=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
+# ═══════════════════════════════════════════════════════════════
+# TAB 5 — DASHBOARD ANALÍTICO
+# ═══════════════════════════════════════════════════════════════
+with tab5:
+
+    # ── Paleta de colores del dashboard ──────────────────────
+    COLOR_PENDIENTE = "#f59e0b"
+    COLOR_APROBADA  = "#10b981"
+    COLOR_ANULADA   = "#ef4444"
+    COLOR_PRIMARY   = "#1e3a5f"
+    COLOR_SECONDARY = "#2d5a8e"
+    COLOR_ACCENT    = "#3b82f6"
+
+    PLOTLY_LAYOUT = dict(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Arial", color="#475569", size=12),
+        margin=dict(l=10, r=10, t=40, b=10),
+    )
+    LEGEND_DEFAULT = dict(bgcolor="rgba(255,255,255,0.8)", bordercolor="#e2e8f0", borderwidth=1)
+
+    st.markdown("<div style='margin-bottom:10px;'></div>", unsafe_allow_html=True)
+
+    # ── Cargar datos para el dashboard ───────────────────────
+    try:
+        # Órdenes de compra
+        res_oc_dash = sb.table("orden_compra").select(
+            "id,numero,fecha,estado,id_proveedor,proveedor:id_proveedor(nombre)"
+        ).order("fecha", desc=False).execute()
+        ordenes_dash = res_oc_dash.data or []
+
+        # Detalle de órdenes (productos, cantidades, precios)
+        res_det_dash = sb.table("detalle_orden").select(
+            "id_orden,cantidad,precio_unitario,subtotal,"
+            "producto:id_producto(id,codigo,nombre,categoria:id_categoria(nombre))"
+        ).execute()
+        detalles_dash = res_det_dash.data or []
+
+        # Movimientos
+        res_mov_dash = sb.table("movimiento").select(
+            "tipo,cantidad,fecha,id_producto,"
+            "producto:id_producto(nombre)"
+        ).execute()
+        movs_dash = res_mov_dash.data or []
+
+        # ── KPIs principales ─────────────────────────────────
+        total_oc      = len(ordenes_dash)
+        pendientes    = sum(1 for o in ordenes_dash if o["estado"] == "PENDIENTE")
+        aprobadas     = sum(1 for o in ordenes_dash if o["estado"] == "APROBADA")
+        anuladas      = sum(1 for o in ordenes_dash if o["estado"] == "ANULADA")
+
+        # Calcular montos por orden
+        monto_por_orden = defaultdict(float)
+        for d in detalles_dash:
+            sub = float(d.get("subtotal") or (d["cantidad"] * d["precio_unitario"]))
+            monto_por_orden[d["id_orden"]] += sub
+
+        monto_total_bruto = sum(monto_por_orden.values())
+        monto_aprobado    = sum(
+            monto_por_orden[o["id"]]
+            for o in ordenes_dash if o["estado"] == "APROBADA"
+        )
+
+        # Stock actual desde caché existente
+        stock_data_dash = cargar_stock_actual()
+        prods_sin_stock = sum(1 for s in stock_data_dash if int(s["stock_actual"]) <= 0)
+        prods_stock_bajo = sum(
+            1 for s in stock_data_dash
+            if 0 < int(s["stock_actual"]) <= int(s.get("stock_minimo") or 0)
+        )
+
+        # ── Fila de KPIs ─────────────────────────────────────
+        st.markdown('<div class="card"><div class="card-title blue">📊 Indicadores Generales</div>', unsafe_allow_html=True)
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        k1.metric("Total OC",        total_oc)
+        k2.metric("Pendientes",      pendientes,  delta=f"{pendientes} en espera" if pendientes else None, delta_color="off")
+        k3.metric("Aprobadas",       aprobadas)
+        k4.metric("Anuladas",        anuladas,    delta=f"{anuladas} canceladas" if anuladas else None, delta_color="inverse")
+        k5.metric("Monto Aprobado",  f"S/ {monto_aprobado:,.0f}")
+        k6.metric("Productos sin stock", prods_sin_stock, delta_color="inverse")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Fila 1: Gráfico de barras OC por mes + Pastel por estado ──
+        col_bar, col_pie = st.columns([1.6, 1])
+
+        with col_bar:
+            st.markdown('<div class="card"><div class="card-title blue">📅 Órdenes de Compra por Mes</div>', unsafe_allow_html=True)
+            if ordenes_dash:
+                mes_count = defaultdict(int)
+                mes_monto = defaultdict(float)
+                for o in ordenes_dash:
+                    mes = o["fecha"][:7]  # YYYY-MM
+                    mes_count[mes] += 1
+                    mes_monto[mes] += monto_por_orden.get(o["id"], 0)
+
+                meses_sorted = sorted(mes_count.keys())
+                fig_bar = go.Figure()
+                fig_bar.add_trace(go.Bar(
+                    x=meses_sorted,
+                    y=[mes_count[m] for m in meses_sorted],
+                    name="Cantidad OC",
+                    marker_color=COLOR_ACCENT,
+                    yaxis="y",
+                    text=[mes_count[m] for m in meses_sorted],
+                    textposition="outside",
+                ))
+                fig_bar.add_trace(go.Scatter(
+                    x=meses_sorted,
+                    y=[mes_monto[m] for m in meses_sorted],
+                    name="Monto (S/)",
+                    line=dict(color=COLOR_APROBADA, width=3),
+                    mode="lines+markers",
+                    yaxis="y2",
+                    marker=dict(size=8),
+                ))
+                fig_bar.update_layout(
+                    **PLOTLY_LAYOUT,
+                    yaxis=dict(title="Cantidad OC", gridcolor="#f1f5f9", zeroline=False),
+                    yaxis2=dict(title="Monto (S/)", overlaying="y", side="right", gridcolor="#f1f5f9"),
+                    legend=dict(orientation="h", y=1.1, x=0),
+                    height=320,
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.markdown("<p class='empty-msg'>Sin datos de órdenes aún.</p>", unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col_pie:
+            st.markdown('<div class="card"><div class="card-title orange">🥧 Clasificación por Estado</div>', unsafe_allow_html=True)
+            labels_pie = ["Pendiente", "Aprobada", "Anulada"]
+            values_pie = [pendientes, aprobadas, anuladas]
+            colors_pie = [COLOR_PENDIENTE, COLOR_APROBADA, COLOR_ANULADA]
+            fig_pie = go.Figure(go.Pie(
+                labels=labels_pie,
+                values=values_pie,
+                hole=0.5,
+                marker=dict(colors=colors_pie, line=dict(color="#ffffff", width=2)),
+                textinfo="label+percent",
+                textfont=dict(size=12),
+                hovertemplate="<b>%{label}</b><br>Cantidad: %{value}<br>%{percent}<extra></extra>",
+            ))
+            fig_pie.add_annotation(
+                text=f"<b>{total_oc}</b><br>OC Total",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=16, color=COLOR_PRIMARY),
+            )
+            fig_pie.update_layout(**PLOTLY_LAYOUT, height=320, showlegend=True)
+            st.plotly_chart(fig_pie, use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Fila 2: ABC de productos + Top proveedores ────────
+        col_abc, col_prov = st.columns([1.6, 1])
+
+        with col_abc:
+            st.markdown('<div class="card"><div class="card-title green">🔤 Análisis ABC de Productos (por monto comprado)</div>', unsafe_allow_html=True)
+
+            if detalles_dash:
+                # Agrupa monto total por producto
+                monto_prod = defaultdict(float)
+                nombre_prod = {}
+                for d in detalles_dash:
+                    prod = d.get("producto") or {}
+                    pid  = prod.get("id") or "?"
+                    sub  = float(d.get("subtotal") or (d["cantidad"] * d["precio_unitario"]))
+                    monto_prod[pid] += sub
+                    nombre_prod[pid] = prod.get("nombre", "—")
+
+                # Ordena de mayor a menor y calcula % acumulado
+                sorted_prods = sorted(monto_prod.items(), key=lambda x: x[1], reverse=True)
+                total_m = sum(v for _, v in sorted_prods) or 1
+                acum = 0
+                abc_data = []
+                for pid, monto in sorted_prods:
+                    acum += monto
+                    pct_acum = acum / total_m * 100
+                    clase = "A" if pct_acum <= 80 else ("B" if pct_acum <= 95 else "C")
+                    abc_data.append({
+                        "nombre": nombre_prod[pid][:28],
+                        "monto":  monto,
+                        "clase":  clase,
+                        "pct_acum": pct_acum,
+                    })
+
+                nombres_abc  = [x["nombre"] for x in abc_data]
+                montos_abc   = [x["monto"]  for x in abc_data]
+                clases_abc   = [x["clase"]  for x in abc_data]
+                pct_acum_abc = [x["pct_acum"] for x in abc_data]
+
+                color_map = {"A": "#3b82f6", "B": "#f59e0b", "C": "#94a3b8"}
+                colores_barras = [color_map[c] for c in clases_abc]
+
+                fig_abc = go.Figure()
+                fig_abc.add_trace(go.Bar(
+                    x=nombres_abc,
+                    y=montos_abc,
+                    name="Monto S/",
+                    marker_color=colores_barras,
+                    text=[f"S/{m:,.0f}" for m in montos_abc],
+                    textposition="outside",
+                    yaxis="y",
+                    hovertemplate="<b>%{x}</b><br>Monto: S/ %{y:,.2f}<extra></extra>",
+                ))
+                fig_abc.add_trace(go.Scatter(
+                    x=nombres_abc,
+                    y=pct_acum_abc,
+                    name="% Acumulado",
+                    mode="lines+markers",
+                    line=dict(color="#ef4444", width=2, dash="dot"),
+                    marker=dict(size=6),
+                    yaxis="y2",
+                    hovertemplate="%{y:.1f}% acumulado<extra></extra>",
+                ))
+                # Líneas de corte 80% y 95%
+                fig_abc.add_hline(y=80,  yref="y2", line_dash="dash", line_color="#3b82f6", opacity=0.5, annotation_text="80% — Clase A", annotation_position="right")
+                fig_abc.add_hline(y=95,  yref="y2", line_dash="dash", line_color="#f59e0b", opacity=0.5, annotation_text="95% — Clase B", annotation_position="right")
+
+                fig_abc.update_layout(
+                    **PLOTLY_LAYOUT,
+                    height=360,
+                    xaxis=dict(tickangle=-35, tickfont=dict(size=10)),
+                    yaxis=dict(title="Monto (S/)", gridcolor="#f1f5f9"),
+                    yaxis2=dict(title="% Acumulado", overlaying="y", side="right", range=[0, 110]),
+                    legend=dict(orientation="h", y=1.12, x=0),
+                )
+                st.plotly_chart(fig_abc, use_container_width=True)
+
+                # Resumen ABC
+                resumen_abc = defaultdict(lambda: {"count": 0, "monto": 0})
+                for x in abc_data:
+                    resumen_abc[x["clase"]]["count"] += 1
+                    resumen_abc[x["clase"]]["monto"] += x["monto"]
+
+                ra1, ra2, ra3 = st.columns(3)
+                for col_r, cls, color in [(ra1, "A", "#3b82f6"), (ra2, "B", "#f59e0b"), (ra3, "C", "#94a3b8")]:
+                    col_r.markdown(
+                        f"<div style='background:{color}18;border:1.5px solid {color};border-radius:10px;padding:10px 14px;'>"
+                        f"<span style='font-size:11px;font-weight:800;color:{color};text-transform:uppercase;'>Clase {cls}</span><br>"
+                        f"<span style='font-size:18px;font-weight:900;color:#1e293b;'>{resumen_abc[cls]['count']} prod.</span><br>"
+                        f"<span style='font-size:12px;color:#64748b;'>S/ {resumen_abc[cls]['monto']:,.0f}</span>"
+                        f"</div>", unsafe_allow_html=True
+                    )
+            else:
+                st.markdown("<p class='empty-msg'>Sin datos de detalle de órdenes.</p>", unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col_prov:
+            st.markdown('<div class="card"><div class="card-title purple">🏭 Top Proveedores por Monto</div>', unsafe_allow_html=True)
+            if ordenes_dash and monto_por_orden:
+                prov_monto = defaultdict(float)
+                for o in ordenes_dash:
+                    nombre_pv = (o.get("proveedor") or {}).get("nombre", "Sin nombre")
+                    prov_monto[nombre_pv] += monto_por_orden.get(o["id"], 0)
+
+                top_provs = sorted(prov_monto.items(), key=lambda x: x[1], reverse=True)[:8]
+                nombres_pv = [p[:22] for p, _ in top_provs]
+                montos_pv  = [m for _, m in top_provs]
+
+                fig_prov = go.Figure(go.Bar(
+                    x=montos_pv,
+                    y=nombres_pv,
+                    orientation="h",
+                    marker_color=[f"rgba(30,58,95,{max(0.4, 1 - i*0.1)})" for i in range(len(nombres_pv))],
+                    text=[f"S/ {m:,.0f}" for m in montos_pv],
+                    textposition="outside",
+                    hovertemplate="<b>%{y}</b><br>S/ %{x:,.2f}<extra></extra>",
+                ))
+                fig_prov.update_layout(
+                    **PLOTLY_LAYOUT,
+                    height=360,
+                    xaxis=dict(title="Monto (S/)", gridcolor="#f1f5f9"),
+                    yaxis=dict(autorange="reversed"),
+                )
+                st.plotly_chart(fig_prov, use_container_width=True)
+            else:
+                st.markdown("<p class='empty-msg'>Sin datos de proveedores.</p>", unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Fila 3: Costos acumulados + Stock por categoría ───
+        col_cost, col_stock_cat = st.columns(2)
+
+        with col_cost:
+            st.markdown('<div class="card"><div class="card-title teal">💰 Evolución de Costos (monto OC acumulado)</div>', unsafe_allow_html=True)
+            if ordenes_dash:
+                # Acumula el monto a lo largo del tiempo por estado APROBADA
+                aprobadas_sorted = sorted(
+                    [o for o in ordenes_dash if o["estado"] == "APROBADA"],
+                    key=lambda x: x["fecha"]
+                )
+                fechas_cost = [o["fecha"] for o in aprobadas_sorted]
+                montos_cost = [monto_por_orden.get(o["id"], 0) for o in aprobadas_sorted]
+                acum_cost   = []
+                acc = 0
+                for m in montos_cost:
+                    acc += m
+                    acum_cost.append(acc)
+
+                if fechas_cost:
+                    fig_cost = go.Figure()
+                    fig_cost.add_trace(go.Scatter(
+                        x=fechas_cost,
+                        y=acum_cost,
+                        mode="lines",
+                        fill="tozeroy",
+                        line=dict(color=COLOR_APROBADA, width=3),
+                        fillcolor="rgba(16,185,129,0.12)",
+                        name="Monto acumulado",
+                        hovertemplate="Fecha: %{x}<br>Acumulado: S/ %{y:,.2f}<extra></extra>",
+                    ))
+                    fig_cost.add_trace(go.Bar(
+                        x=fechas_cost,
+                        y=montos_cost,
+                        name="Monto OC",
+                        marker_color="rgba(59,130,246,0.5)",
+                        hovertemplate="Monto OC: S/ %{y:,.2f}<extra></extra>",
+                    ))
+                    fig_cost.update_layout(
+                        **PLOTLY_LAYOUT,
+                        height=300,
+                        xaxis=dict(gridcolor="#f1f5f9"),
+                        yaxis=dict(title="S/", gridcolor="#f1f5f9"),
+                        legend=dict(orientation="h", y=1.1),
+                    )
+                    st.plotly_chart(fig_cost, use_container_width=True)
+                else:
+                    st.markdown("<p class='empty-msg'>No hay órdenes aprobadas con montos.</p>", unsafe_allow_html=True)
+            else:
+                st.markdown("<p class='empty-msg'>Sin datos.</p>", unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col_stock_cat:
+            st.markdown('<div class="card"><div class="card-title red">📦 Stock Actual por Categoría</div>', unsafe_allow_html=True)
+            if stock_data_dash:
+                cat_stock = defaultdict(int)
+                for s in stock_data_dash:
+                    cat = s.get("categoria") or "Sin categoría"
+                    cat_stock[cat] += max(0, int(s["stock_actual"]))
+
+                cats  = list(cat_stock.keys())
+                vals  = list(cat_stock.values())
+                cols_stock = [
+                    f"rgba(30,58,95,{max(0.35, 0.9 - i * 0.12)})" for i in range(len(cats))
+                ]
+
+                fig_stk = go.Figure(go.Bar(
+                    x=cats,
+                    y=vals,
+                    marker_color=cols_stock,
+                    text=vals,
+                    textposition="outside",
+                    hovertemplate="<b>%{x}</b><br>Stock: %{y} unidades<extra></extra>",
+                ))
+                fig_stk.update_layout(
+                    **PLOTLY_LAYOUT,
+                    height=300,
+                    xaxis=dict(tickangle=-30, tickfont=dict(size=10)),
+                    yaxis=dict(title="Unidades en stock", gridcolor="#f1f5f9"),
+                )
+                st.plotly_chart(fig_stk, use_container_width=True)
+            else:
+                st.markdown("<p class='empty-msg'>Sin datos de stock.</p>", unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Fila 4: Movimientos por tipo + Alertas de stock ───
+        col_mov, col_alerta = st.columns([1.4, 1])
+
+        with col_mov:
+            st.markdown('<div class="card"><div class="card-title blue">🔄 Movimientos por Tipo</div>', unsafe_allow_html=True)
+            if movs_dash:
+                tipo_count = defaultdict(int)
+                tipo_cant  = defaultdict(int)
+                for m in movs_dash:
+                    tipo_count[m["tipo"]] += 1
+                    tipo_cant[m["tipo"]]  += int(m["cantidad"])
+
+                MOTIVO_LABEL_D = {
+                    "COMPRA":       "🟢 Compra",
+                    "DEVOLUCION":   "🔵 Devolución",
+                    "VENTA":        "🔴 Venta",
+                    "INHABILITADO": "⚫ Inhabilitado",
+                    "USO_INTERNO":  "🟡 Uso Interno",
+                }
+                tipos_list  = list(tipo_count.keys())
+                labels_list = [MOTIVO_LABEL_D.get(t, t) for t in tipos_list]
+                counts_list = [tipo_count[t] for t in tipos_list]
+                cants_list  = [tipo_cant[t]  for t in tipos_list]
+
+                color_tipo = {
+                    "COMPRA": COLOR_APROBADA, "DEVOLUCION": COLOR_ACCENT,
+                    "VENTA": COLOR_ANULADA, "INHABILITADO": "#6b7280", "USO_INTERNO": COLOR_PENDIENTE
+                }
+                colores_tipo = [color_tipo.get(t, COLOR_PRIMARY) for t in tipos_list]
+
+                fig_mov = go.Figure()
+                fig_mov.add_trace(go.Bar(
+                    x=labels_list, y=counts_list, name="Nº Movimientos",
+                    marker_color=colores_tipo,
+                    text=counts_list, textposition="outside",
+                    yaxis="y",
+                ))
+                fig_mov.add_trace(go.Scatter(
+                    x=labels_list, y=cants_list, name="Unidades",
+                    mode="lines+markers", line=dict(color="#8b5cf6", width=2),
+                    marker=dict(size=8), yaxis="y2",
+                ))
+                fig_mov.update_layout(
+                    **PLOTLY_LAYOUT, height=300,
+                    yaxis=dict(title="Nº Movimientos", gridcolor="#f1f5f9"),
+                    yaxis2=dict(title="Unidades", overlaying="y", side="right"),
+                    legend=dict(orientation="h", y=1.1),
+                )
+                st.plotly_chart(fig_mov, use_container_width=True)
+            else:
+                st.markdown("<p class='empty-msg'>Sin movimientos registrados.</p>", unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col_alerta:
+            st.markdown('<div class="card"><div class="card-title red">⚠️ Alertas de Stock</div>', unsafe_allow_html=True)
+            sin_stock  = [s for s in stock_data_dash if int(s["stock_actual"]) <= 0]
+            stock_bajo = [s for s in stock_data_dash if 0 < int(s["stock_actual"]) <= int(s.get("stock_minimo") or 0)]
+
+            if sin_stock or stock_bajo:
+                if sin_stock:
+                    st.markdown(
+                        f"<div style='background:#fef2f2;border:1.5px solid #fca5a5;border-radius:8px;padding:8px 12px;margin-bottom:8px;'>"
+                        f"<span style='font-size:11px;font-weight:800;color:#991b1b;'>❌ SIN STOCK ({len(sin_stock)} productos)</span></div>",
+                        unsafe_allow_html=True
+                    )
+                    for s in sin_stock[:5]:
+                        st.markdown(
+                            f"<div style='display:flex;justify-content:space-between;padding:4px 12px;border-bottom:1px solid #fee2e2;'>"
+                            f"<span style='font-size:12px;color:#475569;'>{s['nombre'][:30]}</span>"
+                            f"<span style='font-size:12px;font-weight:800;color:#dc2626;'>0 {s['unidad']}</span>"
+                            f"</div>", unsafe_allow_html=True
+                        )
+
+                if stock_bajo:
+                    st.markdown(
+                        f"<div style='background:#fffbeb;border:1.5px solid #fcd34d;border-radius:8px;padding:8px 12px;margin:8px 0;'>"
+                        f"<span style='font-size:11px;font-weight:800;color:#92400e;'>⚠️ STOCK BAJO ({len(stock_bajo)} productos)</span></div>",
+                        unsafe_allow_html=True
+                    )
+                    for s in stock_bajo[:5]:
+                        st.markdown(
+                            f"<div style='display:flex;justify-content:space-between;padding:4px 12px;border-bottom:1px solid #fef3c7;'>"
+                            f"<span style='font-size:12px;color:#475569;'>{s['nombre'][:30]}</span>"
+                            f"<span style='font-size:12px;font-weight:800;color:#d97706;'>{int(s['stock_actual'])} / mín {int(s.get('stock_minimo') or 0)}</span>"
+                            f"</div>", unsafe_allow_html=True
+                        )
+            else:
+                st.markdown(
+                    "<div style='text-align:center;padding:30px 0;'>"
+                    "<span style='font-size:36px;'>✅</span><br>"
+                    "<span style='color:#059669;font-weight:800;'>¡Todo el stock está OK!</span>"
+                    "</div>", unsafe_allow_html=True
+                )
+
+            # Mini gráfico de pastel de alertas
+            if stock_data_dash:
+                ok_count = len(stock_data_dash) - len(sin_stock) - len(stock_bajo)
+                fig_alert = go.Figure(go.Pie(
+                    labels=["OK", "Stock bajo", "Sin stock"],
+                    values=[ok_count, len(stock_bajo), len(sin_stock)],
+                    hole=0.6,
+                    marker=dict(colors=[COLOR_APROBADA, COLOR_PENDIENTE, COLOR_ANULADA],
+                                line=dict(color="#ffffff", width=2)),
+                    textinfo="value+label",
+                    textfont=dict(size=11),
+                ))
+                fig_alert.add_annotation(
+                    text=f"<b>{len(stock_data_dash)}</b><br>prods",
+                    x=0.5, y=0.5, showarrow=False,
+                    font=dict(size=14, color=COLOR_PRIMARY),
+                )
+                fig_alert.update_layout(**PLOTLY_LAYOUT, height=220, showlegend=False)
+                st.plotly_chart(fig_alert, use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Fila 5: Tabla resumen cantidad de OC por producto ─
+        st.markdown('<div class="card"><div class="card-title orange">🛒 Cantidad de Veces Comprado por Producto</div>', unsafe_allow_html=True)
+        if detalles_dash:
+            prod_oc_count = defaultdict(lambda: {"nombre": "", "veces": 0, "cantidad": 0, "monto": 0})
+            for d in detalles_dash:
+                prod = d.get("producto") or {}
+                pid  = prod.get("id") or "?"
+                sub  = float(d.get("subtotal") or (d["cantidad"] * d["precio_unitario"]))
+                prod_oc_count[pid]["nombre"]   = prod.get("nombre", "—")
+                prod_oc_count[pid]["veces"]   += 1
+                prod_oc_count[pid]["cantidad"] += int(d["cantidad"])
+                prod_oc_count[pid]["monto"]    += sub
+
+            tabla = sorted(prod_oc_count.values(), key=lambda x: x["veces"], reverse=True)
+
+            th1, th2, th3, th4 = st.columns([3, 1, 1.2, 1.5])
+            for col_t, h_t in zip([th1, th2, th3, th4], ["Producto", "Veces en OC", "Unidades compradas", "Monto total"]):
+                col_t.markdown(
+                    f"<span style='font-size:10px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:0.6px;'>{h_t}</span>",
+                    unsafe_allow_html=True
+                )
+            st.markdown("<hr style='margin:4px 0 6px;'>", unsafe_allow_html=True)
+
+            for row in tabla:
+                r1, r2, r3, r4 = st.columns([3, 1, 1.2, 1.5])
+                r1.write(row["nombre"])
+                r2.markdown(f"<span style='font-weight:800;color:#1e3a5f;'>{row['veces']}</span>", unsafe_allow_html=True)
+                r3.markdown(f"<span style='font-weight:700;color:#475569;'>{row['cantidad']}</span>", unsafe_allow_html=True)
+                r4.markdown(f"<span style='font-weight:800;color:#059669;'>S/ {row['monto']:,.2f}</span>", unsafe_allow_html=True)
+        else:
+            st.markdown("<p class='empty-msg'>Sin datos de productos en órdenes.</p>", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    except Exception as e:
+        st.error(f"❌ Error al cargar el dashboard: {e}")
